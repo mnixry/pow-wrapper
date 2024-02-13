@@ -6,11 +6,15 @@ import pwn
 import re
 
 
-
 def proof_of_work(nonce: str, difficulty: int):
     nonce_byte = nonce.encode()
     for salt in itertools.chain.from_iterable(
-        map(bytes, itertools.product((string.ascii_letters + string.digits).encode(), repeat=i))
+        map(
+            bytes,
+            itertools.product(
+                (string.ascii_letters + string.digits).encode(), repeat=i
+            ),
+        )
         for i in itertools.count(1)
     ):
         if (
@@ -20,7 +24,8 @@ def proof_of_work(nonce: str, difficulty: int):
             return salt
     raise ValueError("No solution found")
 
-p = pwn.remote('localhost', 1337)
+
+p = pwn.remote("localhost", 1337)
 
 matched = re.search(
     r"sha256\('(?P<nonce>[-A-Za-z0-9+/]+?)'.*?\)(?:.*?)startswith\('0'\s*\*\s*(?P<diff>\d+)\)",
