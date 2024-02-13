@@ -33,7 +33,10 @@ type powClient struct {
 	ttyEnabled       bool
 }
 
-func (p *powClient) sendLine(line string) {
+func (p *powClient) sendLine(line string, args ...interface{}) {
+	if len(args) > 0 {
+		line = fmt.Sprintf(line, args...)
+	}
 	p.conn.Write([]byte(line + "\n"))
 }
 
@@ -47,16 +50,17 @@ func (p *powClient) handle() {
 	defer p.conn.Close()
 
 	p.sendLine("Welcome to the proof of work challenge")
+	p.sendLine("You have %d seconds to solve the PoW", p.timeout)
+
 	nonce := make([]byte, 6)
 	_, err := rand.Read(nonce)
 	if err != nil {
 		panic(err)
 	}
 	nonceStr := base64.StdEncoding.EncodeToString(nonce)
-	powString := fmt.Sprintf(
+	p.sendLine(
 		"assert sha256('%s' + ?).hexdigest().startswith('0' * %d) == True",
 		nonceStr, p.difficulty)
-	p.sendLine(powString)
 	p.sendLine("? = ")
 
 	buf := make([]byte, 1024)
@@ -81,7 +85,7 @@ func (p *powClient) handle() {
 	}
 
 	log.Printf("PoW accepted from %s, took client %v", p.conn.RemoteAddr(), elapsed)
-	p.sendLine("PoW accepted, preparing challenge")
+	p.sendLine("PoW accepted, starting container, you have %d seconds", p.containerTimeout)
 
 	if err := p.runContainer(); err != nil {
 		p.sendLine("Error running container, please report to the author")
@@ -130,8 +134,13 @@ func (p *powClient) runContainer() error {
 	}
 	defer attachResp.Close()
 
-	attachResp.Conn.SetReadDeadline(time.Now().Add(time.Duration(p.containerTimeout) * time.Second))
-	defer attachResp.Conn.SetReadDeadline(time.Time{})
+	go func() {
+		<-time.After(time.Duration(p.containerTimeout) * time.Second)
+		log.Printf("Container timeout, killing container")
+		if err := p.dockerCli.ContainerKill(ctx, resp.ID, "SIGKILL"); err != nil {
+			log.Printf("Error stopping container: %v", err)
+		}
+	}()
 
 	if err := p.dockerCli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
 		log.Printf("Error starting container: %v", err)
