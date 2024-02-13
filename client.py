@@ -2,30 +2,30 @@ import hashlib
 import string
 import itertools
 
-import pwn
+from pwn import remote
 import re
 
 
-def proof_of_work(nonce: str, difficulty: int):
+def proof_of_work(
+    nonce: str,
+    difficulty: int,
+    salt_charset: str = string.ascii_letters + string.digits,
+):
     nonce_byte = nonce.encode()
+    expected_prefix = "0" * difficulty
     for salt in itertools.chain.from_iterable(
         map(
             bytes,
-            itertools.product(
-                (string.ascii_letters + string.digits).encode(), repeat=i
-            ),
+            itertools.product(salt_charset.encode(), repeat=i),
         )
         for i in itertools.count(1)
     ):
-        if (
-            hashlib.sha256(nonce_byte + salt).hexdigest()[:difficulty]
-            == "0" * difficulty
-        ):
+        if hashlib.sha256(nonce_byte + salt).hexdigest().startswith(expected_prefix):
             return salt
     raise ValueError("No solution found")
 
 
-p = pwn.remote("localhost", 1337)
+p = remote("localhost", 1337)
 
 matched = re.search(
     r"sha256\('(?P<nonce>[-A-Za-z0-9+/]+?)'.*?\)(?:.*?)startswith\('0'\s*\*\s*(?P<diff>\d+)\)",
@@ -34,5 +34,6 @@ matched = re.search(
 assert matched, "No proof of work found"
 nonce = matched.group("nonce")
 difficulty = int(matched.group("diff"))
+
 p.send(proof_of_work(nonce, difficulty))
 p.interactive()
