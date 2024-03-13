@@ -31,6 +31,7 @@ type powClient struct {
 	timeout          int
 	containerTimeout int
 	ttyEnabled       bool
+	skipPoW          bool
 }
 
 func (p *powClient) sendLine(line string, args ...interface{}) {
@@ -46,9 +47,7 @@ func (p *powClient) readTimeout(buf []byte) (int, error) {
 	return p.conn.Read(buf)
 }
 
-func (p *powClient) handle() {
-	defer p.conn.Close()
-
+func (p *powClient) pow() {
 	p.sendLine("Welcome to the proof of work challenge")
 	p.sendLine("You have %d seconds to solve the PoW", p.timeout)
 
@@ -86,6 +85,16 @@ func (p *powClient) handle() {
 
 	log.Printf("PoW accepted from %s, took client %v", p.conn.RemoteAddr(), elapsed)
 	p.sendLine("PoW accepted, starting container, you have %d seconds", p.containerTimeout)
+}
+
+func (p *powClient) handle() {
+	defer p.conn.Close()
+
+	if !p.skipPoW {
+		p.pow()
+	} else {
+		p.sendLine("Starting container, you have %d seconds before it is killed", p.containerTimeout)
+	}
 
 	if err := p.runContainer(); err != nil {
 		p.sendLine("Error running container, please report to the author")

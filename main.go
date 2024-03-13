@@ -27,6 +27,8 @@ func main() {
 	timeout := flag.Int("timeout", 10, "Socket timeout")
 	containerTimeout := flag.Int("container-timeout", 10*60, "Container timeout")
 	enablesTTY := flag.Bool("tty", false, "Enable TTY")
+	skipPoW := flag.Bool("skip-pow", false, "Skip proof of work")
+
 	var envs envVar
 	flag.Var(&envs, "env", "Environment variables to set")
 	flag.Parse()
@@ -71,6 +73,7 @@ func main() {
 			timeout:          *timeout,
 			containerTimeout: *containerTimeout,
 			ttyEnabled:       *enablesTTY,
+			skipPoW:          *skipPoW,
 		}
 		go pow.handle()
 	}
