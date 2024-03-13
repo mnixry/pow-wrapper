@@ -28,6 +28,8 @@ func main() {
 	containerTimeout := flag.Int("container-timeout", 10*60, "Container timeout")
 	enablesTTY := flag.Bool("tty", false, "Enable TTY")
 	skipPoW := flag.Bool("skip-pow", false, "Skip proof of work")
+	networkIsolation := flag.Bool("network-isolation", true, "Enable network isolation")
+	internetAccess := flag.Bool("internet-access", false, "Enable internet access")
 
 	var envs envVar
 	flag.Var(&envs, "env", "Environment variables to set")
@@ -74,6 +76,8 @@ func main() {
 			containerTimeout: *containerTimeout,
 			ttyEnabled:       *enablesTTY,
 			skipPoW:          *skipPoW,
+			networkIsolation: *networkIsolation,
+			internetAccess:   *internetAccess,
 		}
 		go pow.handle()
 	}

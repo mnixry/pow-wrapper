@@ -16,7 +16,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/network"
 	docker "github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
 )
@@ -32,6 +34,8 @@ type powClient struct {
 	containerTimeout int
 	ttyEnabled       bool
 	skipPoW          bool
+	networkIsolation bool
+	internetAccess   bool
 }
 
 func (p *powClient) sendLine(line string, args ...interface{}) {
@@ -108,17 +112,42 @@ func (p *powClient) runContainer() error {
 	imageName := strings.Split(p.image, ":")[0]
 	clientName := regexp.MustCompile(`[^a-zA-Z0-9]`).ReplaceAllString(imageName, "")
 	containerName := fmt.Sprintf("%s-%s", imageName, clientName)
+	networkName := containerName + "-network"
+
+	var networkID string
+	if p.networkIsolation {
+		res, err := p.dockerCli.NetworkCreate(ctx, networkName, types.NetworkCreate{
+			Internal: !p.internetAccess,
+		})
+		if err != nil {
+			log.Printf("Error creating network: %v", err)
+			return err
+		}
+		networkID = res.ID
+		defer func() {
+			if err := p.dockerCli.NetworkRemove(ctx, networkID); err != nil {
+				log.Printf("Error removing network: %v", err)
+			}
+		}()
+	}
 
 	resp, err := p.dockerCli.ContainerCreate(ctx, &container.Config{
-		Image:        p.image,
-		Env:          p.envs,
-		Cmd:          p.commands,
-		OpenStdin:    true,
-		AttachStdin:  true,
-		AttachStdout: true,
-		AttachStderr: true,
-		Tty:          p.ttyEnabled,
-	}, nil, nil, nil, containerName)
+		Image:           p.image,
+		Env:             p.envs,
+		Cmd:             p.commands,
+		OpenStdin:       true,
+		AttachStdin:     true,
+		AttachStdout:    true,
+		AttachStderr:    true,
+		Tty:             p.ttyEnabled,
+		NetworkDisabled: !p.internetAccess && !p.networkIsolation,
+	}, nil, &network.NetworkingConfig{
+		EndpointsConfig: map[string]*network.EndpointSettings{
+			"sandbox": {
+				NetworkID: networkID,
+			},
+		},
+	}, nil, containerName)
 
 	if err != nil {
 		log.Printf("Error creating container: %v", err)
