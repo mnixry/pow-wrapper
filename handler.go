@@ -18,9 +18,11 @@ import (
 
 	"github.com/docker/docker/api/types"
 	"github.com/docker/docker/api/types/container"
+	"github.com/docker/docker/api/types/filters"
 	"github.com/docker/docker/api/types/network"
 	docker "github.com/docker/docker/client"
 	"github.com/docker/docker/pkg/stdcopy"
+	"github.com/docker/go-connections/nat"
 )
 
 type powClient struct {
@@ -36,6 +38,7 @@ type powClient struct {
 	skipPoW          bool
 	networkIsolation bool
 	internetAccess   bool
+	exposedPorts     []uint16
 }
 
 func (p *powClient) sendLine(line string, args ...interface{}) {
@@ -120,7 +123,6 @@ func (p *powClient) runContainer() error {
 
 	var networkID string
 	if p.networkIsolation {
-		log.Printf("Creating network %s", networkName)
 		res, err := p.dockerCli.NetworkCreate(ctx, networkName, types.NetworkCreate{
 			Internal: !p.internetAccess,
 		})
@@ -147,6 +149,18 @@ func (p *powClient) runContainer() error {
 		}
 	}
 
+	var hostConfig *container.HostConfig
+	exposedPorts := nat.PortSet{}
+	if len(p.exposedPorts) > 0 {
+		for _, port := range p.exposedPorts {
+			portStr := nat.Port(fmt.Sprintf("%d/tcp", port))
+			exposedPorts[portStr] = struct{}{}
+		}
+		hostConfig = &container.HostConfig{
+			PublishAllPorts: true,
+		}
+	}
+
 	resp, err := p.dockerCli.ContainerCreate(ctx, &container.Config{
 		Image:           p.image,
 		Env:             p.envs,
@@ -157,19 +171,33 @@ func (p *powClient) runContainer() error {
 		AttachStderr:    true,
 		Tty:             p.ttyEnabled,
 		NetworkDisabled: !p.internetAccess && !p.networkIsolation,
-	}, nil, networkConfig, nil, containerName)
+		ExposedPorts:    exposedPorts,
+	}, hostConfig, networkConfig, nil, containerName)
 
 	if err != nil {
 		log.Printf("Error creating container: %v", err)
 		return err
 	}
+	log.Printf("Created container %s to resp client %s, inside network %s", resp.ID, p.conn.RemoteAddr(), networkName)
 	defer func() {
-		if err := p.dockerCli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{}); err != nil {
+		if err := p.dockerCli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{
+			Force:         true,
+			RemoveVolumes: true,
+			RemoveLinks:   true,
+		}); err != nil {
 			log.Printf("Error removing container: %v", err)
 		}
 	}()
 
-	attachResp, err := p.dockerCli.ContainerAttach(ctx, resp.ID, container.AttachOptions{
+	// There is no need to attach to the container if we are exposing ports
+	if len(p.exposedPorts) > 0 {
+		return p.exposePortFlow(ctx, resp.ID)
+	}
+	return p.attachFlow(ctx, resp.ID)
+}
+
+func (p *powClient) attachFlow(ctx context.Context, containerID string) error {
+	attachResp, err := p.dockerCli.ContainerAttach(ctx, containerID, container.AttachOptions{
 		Logs:   true,
 		Stream: true,
 		Stdin:  true,
@@ -184,21 +212,21 @@ func (p *powClient) runContainer() error {
 
 	go func() {
 		<-time.After(time.Duration(p.containerTimeout) * time.Second)
-		err := p.dockerCli.ContainerKill(ctx, resp.ID, "SIGKILL")
+		err := p.dockerCli.ContainerKill(ctx, containerID, "SIGKILL")
 		if err != nil && !strings.Contains(err.Error(), "No such container") {
 			log.Printf("Error killing timeouted container: %v", err)
 		}
 	}()
 
-	if err := p.dockerCli.ContainerStart(ctx, resp.ID, container.StartOptions{}); err != nil {
+	if err := p.dockerCli.ContainerStart(ctx, containerID, container.StartOptions{}); err != nil {
 		log.Printf("Error starting container: %v", err)
 		return err
 	}
 	defer func() {
-		if resp, err := p.dockerCli.ContainerInspect(ctx, resp.ID); err != nil {
+		if resp, err := p.dockerCli.ContainerInspect(ctx, containerID); err != nil {
 			log.Printf("Error inspecting container: %v", err)
 		} else if resp.State.Running {
-			if err := p.dockerCli.ContainerKill(ctx, resp.ID, "SIGKILL"); err != nil {
+			if err := p.dockerCli.ContainerKill(ctx, containerID, "SIGKILL"); err != nil {
 				log.Printf("Error stopping container: %v", err)
 			}
 		}
@@ -228,5 +256,50 @@ func (p *powClient) runContainer() error {
 	}()
 	wg.Wait()
 
+	return nil
+}
+
+func (p *powClient) exposePortFlow(ctx context.Context, containerID string) error {
+	err := p.dockerCli.ContainerStart(ctx, containerID, container.StartOptions{})
+	if err != nil {
+		log.Printf("Error starting container: %v", err)
+		return err
+	}
+	defer func() {
+		if resp, err := p.dockerCli.ContainerInspect(ctx, containerID); err != nil {
+			log.Printf("Error inspecting container: %v", err)
+		} else if resp.State.Running {
+			if err := p.dockerCli.ContainerKill(ctx, containerID, "SIGKILL"); err != nil {
+				log.Printf("Error stopping container: %v", err)
+			}
+		}
+	}()
+
+	filter := filters.NewArgs()
+	filter.Add("id", containerID)
+	resp, err := p.dockerCli.ContainerList(ctx, container.ListOptions{
+		Filters: filter,
+	})
+	if err != nil {
+		log.Printf("Error listing containers: %v", err)
+		return err
+	}
+	containerInfo := resp[0]
+	exposedPortsPairs := map[uint16]uint16{}
+	for port := range containerInfo.Ports {
+		portInfo := containerInfo.Ports[port]
+		exposedPortsPairs[portInfo.PrivatePort] = portInfo.PublicPort
+	}
+
+	for exposedPortIndex := range p.exposedPorts {
+		privatePort := p.exposedPorts[exposedPortIndex]
+		publicPort := exposedPortsPairs[privatePort]
+		p.sendLine("Port %d is exposed on %d", privatePort, publicPort)
+	}
+	p.sendLine("You can now connect to the exposed ports")
+	p.conn.Close()
+
+	<-time.After(time.Duration(p.containerTimeout) * time.Second)
+	log.Printf("Container %s created by %s timed out", containerID, p.conn.RemoteAddr())
 	return nil
 }

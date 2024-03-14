@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"log"
 	"net"
+	"strconv"
+	"strings"
 
 	docker "github.com/docker/docker/client"
 )
@@ -30,6 +32,7 @@ func main() {
 	skipPoW := flag.Bool("skip-pow", false, "Skip proof of work")
 	networkIsolation := flag.Bool("network-isolation", true, "Enable network isolation")
 	internetAccess := flag.Bool("internet-access", false, "Enable internet access")
+	exposePorts := flag.String("expose-ports", "", "Comma separated list of ports to expose")
 
 	var envs envVar
 	flag.Var(&envs, "env", "Environment variables to set")
@@ -40,6 +43,21 @@ func main() {
 
 	if *image == "" {
 		panic("Image not specified")
+	}
+
+	if !*internetAccess && *exposePorts != "" {
+		panic("Cannot expose ports without internet access")
+	}
+
+	var exposedPorts []uint16
+	if *exposePorts != "" {
+		for _, port := range strings.Split(*exposePorts, ",") {
+			portNumber, err := strconv.Atoi(port)
+			if err != nil || portNumber < 1 || portNumber > 0xffff {
+				panic("Invalid port number")
+			}
+			exposedPorts = append(exposedPorts, uint16(portNumber))
+		}
 	}
 
 	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", *port))
@@ -78,6 +96,7 @@ func main() {
 			skipPoW:          *skipPoW,
 			networkIsolation: *networkIsolation,
 			internetAccess:   *internetAccess,
+			exposedPorts:     exposedPorts,
 		}
 		go pow.handle()
 	}
