@@ -184,9 +184,9 @@ func (p *powClient) runContainer() error {
 
 	go func() {
 		<-time.After(time.Duration(p.containerTimeout) * time.Second)
-		log.Printf("Container timeout, killing container")
-		if err := p.dockerCli.ContainerKill(ctx, resp.ID, "SIGKILL"); err != nil {
-			log.Printf("Error stopping container: %v", err)
+		err := p.dockerCli.ContainerKill(ctx, resp.ID, "SIGKILL")
+		if err != nil && !strings.Contains(err.Error(), "No such container") {
+			log.Printf("Error killing timeouted container: %v", err)
 		}
 	}()
 
