@@ -51,7 +51,7 @@ func (p *powClient) readTimeout(buf []byte) (int, error) {
 	return p.conn.Read(buf)
 }
 
-func (p *powClient) pow() {
+func (p *powClient) pow() bool {
 	p.sendLine("Welcome to the proof of work challenge")
 	p.sendLine("You have %d seconds to solve the PoW", p.timeout)
 
@@ -71,7 +71,7 @@ func (p *powClient) pow() {
 	n, err := p.readTimeout(buf)
 	if err != nil || n == 0 {
 		log.Printf("Error reading pow: %v", err)
-		return
+		return false
 	}
 	elapsed := time.Since(start)
 
@@ -84,18 +84,22 @@ func (p *powClient) pow() {
 	if hashHex[:p.difficulty] != strings.Repeat("0", p.difficulty) {
 		log.Printf("Invalid PoW from %s", p.conn.RemoteAddr())
 		p.sendLine("Invalid PoW")
-		return
+		return false
 	}
 
 	log.Printf("PoW accepted from %s, took client %v", p.conn.RemoteAddr(), elapsed)
 	p.sendLine("PoW accepted, starting container, you have %d seconds", p.containerTimeout)
+	return true
 }
 
 func (p *powClient) handle() {
 	defer p.conn.Close()
 
 	if !p.skipPoW {
-		p.pow()
+		result := p.pow()
+		if !result {
+			return
+		}
 	} else {
 		p.sendLine("Starting container, you have %d seconds before it is killed", p.containerTimeout)
 	}
@@ -110,12 +114,13 @@ func (p *powClient) handle() {
 func (p *powClient) runContainer() error {
 	ctx := context.Background()
 	imageName := strings.Split(p.image, ":")[0]
-	clientName := regexp.MustCompile(`[^a-zA-Z0-9]`).ReplaceAllString(imageName, "")
+	clientName := regexp.MustCompile(`[^a-zA-Z0-9]`).ReplaceAllString(p.conn.RemoteAddr().String(), "")
 	containerName := fmt.Sprintf("%s-%s", imageName, clientName)
 	networkName := containerName + "-network"
 
 	var networkID string
 	if p.networkIsolation {
+		log.Printf("Creating network %s", networkName)
 		res, err := p.dockerCli.NetworkCreate(ctx, networkName, types.NetworkCreate{
 			Internal: !p.internetAccess,
 		})
@@ -131,6 +136,17 @@ func (p *powClient) runContainer() error {
 		}()
 	}
 
+	var networkConfig *network.NetworkingConfig
+	if p.networkIsolation {
+		networkConfig = &network.NetworkingConfig{
+			EndpointsConfig: map[string]*network.EndpointSettings{
+				"sandbox": {
+					NetworkID: networkID,
+				},
+			},
+		}
+	}
+
 	resp, err := p.dockerCli.ContainerCreate(ctx, &container.Config{
 		Image:           p.image,
 		Env:             p.envs,
@@ -141,13 +157,7 @@ func (p *powClient) runContainer() error {
 		AttachStderr:    true,
 		Tty:             p.ttyEnabled,
 		NetworkDisabled: !p.internetAccess && !p.networkIsolation,
-	}, nil, &network.NetworkingConfig{
-		EndpointsConfig: map[string]*network.EndpointSettings{
-			"sandbox": {
-				NetworkID: networkID,
-			},
-		},
-	}, nil, containerName)
+	}, nil, networkConfig, nil, containerName)
 
 	if err != nil {
 		log.Printf("Error creating container: %v", err)
