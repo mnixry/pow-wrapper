@@ -7,6 +7,7 @@ import (
 	"net"
 	"strconv"
 	"strings"
+	"time"
 
 	docker "github.com/docker/docker/client"
 )
@@ -33,6 +34,8 @@ func main() {
 	networkIsolation := flag.Bool("network-isolation", true, "Enable network isolation")
 	internetAccess := flag.Bool("internet-access", false, "Enable internet access")
 	exposePorts := flag.String("expose-ports", "", "Comma separated list of ports to expose")
+	maxInstances := flag.Int("max-instances", 0, "Maximum number of instances")
+	maxInstancesPerIP := flag.Int("max-instances-per-ip", 2, "Maximum number of instances per IP")
 
 	var envs envVar
 	flag.Var(&envs, "env", "Environment variables to set")
@@ -69,6 +72,8 @@ func main() {
 		panic(err)
 	}
 
+	instances := make(map[string]int)
+
 	log.Printf("Listening on port %d", *port)
 	for {
 		conn, err := listener.Accept()
@@ -83,7 +88,7 @@ func main() {
 		} else {
 			commands = nil
 		}
-		pow := powClient{
+		client := powClient{
 			conn:             conn,
 			difficulty:       *difficulty,
 			dockerCli:        dockerCli,
@@ -98,6 +103,37 @@ func main() {
 			internetAccess:   *internetAccess,
 			exposedPorts:     exposedPorts,
 		}
-		go pow.handle()
+		go func() {
+			remoteIP := conn.RemoteAddr().(*net.TCPAddr).IP.String()
+			instances[remoteIP]++
+
+			defer conn.Close()
+			defer func() {
+				<-time.After(5 * time.Second)
+				instances[remoteIP]--
+			}()
+
+			allInstances := func() int {
+				count := 0
+				for _, v := range instances {
+					count += v
+				}
+				return count
+			}()
+
+			if *maxInstances > 0 && allInstances > *maxInstances {
+				log.Printf("Global limit exceed %d", allInstances)
+				client.sendLine("Too many instances created, exceeded limit")
+				return
+			}
+
+			if *maxInstancesPerIP > 0 && instances[remoteIP] > *maxInstancesPerIP {
+				log.Printf("IP limit exceed %d, %d instances", instances[remoteIP], *maxInstancesPerIP)
+				client.sendLine("Too many instances for your IP, exceeded limit")
+				return
+			}
+
+			client.handle()
+		}()
 	}
 }
