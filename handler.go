@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math/big"
 	"net"
 	"regexp"
 	"strings"
@@ -64,10 +65,9 @@ func (p *powClient) pow() bool {
 		panic(err)
 	}
 	nonceStr := base64.StdEncoding.EncodeToString(nonce)
-	p.sendLine(
-		"assert sha256('%s' + ?).hexdigest().startswith('0' * %d) == True",
-		nonceStr, p.difficulty)
-	p.sendLine("? = ")
+	p.sendLine("int.from_bytes(hashlib.sha256(nonce + salt).digest(), 'big') >> (256 - difficulty) == 0")
+	p.sendLine("Where nonce=%s, difficulty=%d", nonceStr, p.difficulty)
+	p.sendLine("salt: ")
 
 	buf := make([]byte, 1024)
 	start := time.Now()
@@ -79,14 +79,15 @@ func (p *powClient) pow() bool {
 	elapsed := time.Since(start)
 
 	salt := bytes.TrimRight(buf[:n], "\x00\r\n")
+
 	checker := sha256.New()
 	checker.Write([]byte(nonceStr))
 	checker.Write(salt)
-	hashHex := fmt.Sprintf("%x", checker.Sum(nil))
+	hashNumber := big.NewInt(0).SetBytes(checker.Sum(nil))
 
-	if hashHex[:p.difficulty] != strings.Repeat("0", p.difficulty) {
-		log.Printf("Invalid PoW from %s", p.conn.RemoteAddr())
-		p.sendLine("Invalid PoW")
+	if hashNumber.Rsh(hashNumber, uint(256-p.difficulty)).Cmp(big.NewInt(0)) != 0 {
+		log.Printf("PoW failed from %s, took client %v", p.conn.RemoteAddr(), elapsed)
+		p.sendLine("PoW failed, please try again")
 		return false
 	}
 

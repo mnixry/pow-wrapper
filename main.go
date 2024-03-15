@@ -25,9 +25,9 @@ func (e *envVar) Set(value string) error {
 
 func main() {
 	port := flag.Int("port", 1337, "Port to listen on")
-	difficulty := flag.Int("difficulty", 6, "Difficulty of the proof of work")
+	difficulty := flag.Int("difficulty", 26, "Difficulty of the proof of work")
 	image := flag.String("image", "", "Docker image to run")
-	timeout := flag.Int("timeout", 10, "Socket timeout")
+	timeout := flag.Int("timeout", 60, "Socket timeout")
 	containerTimeout := flag.Int("container-timeout", 10*60, "Container timeout")
 	enablesTTY := flag.Bool("tty", false, "Enable TTY")
 	skipPoW := flag.Bool("skip-pow", false, "Skip proof of work")
