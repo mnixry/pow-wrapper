@@ -184,7 +184,6 @@ func (p *powClient) runContainer() error {
 		if err := p.dockerCli.ContainerRemove(ctx, resp.ID, container.RemoveOptions{
 			Force:         true,
 			RemoveVolumes: true,
-			RemoveLinks:   true,
 		}); err != nil {
 			log.Printf("Error removing container: %v", err)
 		}
